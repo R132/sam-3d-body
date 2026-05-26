@@ -21,7 +21,13 @@ class FOVEstimator:
 
 
 def load_moge(device, path=""):
-    from moge.model.v2 import MoGeModel
+    try:
+        from moge.model.v2 import MoGeModel
+    except ImportError as e:
+        raise ImportError(
+            "MoGe is not installed. Install MoGe to use the 'moge2' FOV estimator, "
+            "or use structured input_dir with COLMAP intrinsics instead."
+        ) from e
 
     if path == "":
         path = "Ruicheng/moge-2-vitl-normal"

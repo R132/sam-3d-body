@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/gj/miniconda3/envs/sam3d/bin/python *)",
+      "Bash(nvidia-smi *)"
+    ]
+  },
+  "$version": 4
+}

@@ -119,3 +119,9 @@ debug/
 **/.dist_test
 sandbox*
 *.sh
+.idea/*
+.idea/misc.xml
+.idea/modules.xml
+.idea/sam-3d-body.iml
+.idea/vcs.xml
+.idea/inspectionProfiles/profiles_settings.xml
