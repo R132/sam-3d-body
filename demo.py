@@ -330,6 +330,10 @@ def main(args):
     seq = read_sequence(args.input_dir)
     if len(seq) == 0:
         raise ValueError(f"No images found in input_dir: {args.input_dir}")
+    
+    # TODO: DEBUG
+    seq = seq[:1]
+
     cam_count = sum(frame["cam_int"] is not None for frame in seq)
     print(
         f"Using structured input_dir; reading COLMAP intrinsics from {args.input_dir}/sparse/0 "
@@ -373,6 +377,7 @@ def main(args):
         rend_img = visualize_sample_together(img, outputs, estimator.faces)
         out_name = os.path.basename(img_path)
         cv2.imwrite(os.path.join(output_folder, out_name), rend_img.astype(np.uint8))
+        print(f"Frame {idx}: saved {out_name}")
 
         if args.save_mesh and idx % args.mesh_save_interval == 0:
             save_mesh_results(img, outputs, estimator.faces, output_folder, os.path.splitext(out_name)[0])
@@ -442,6 +447,16 @@ def main(args):
                 'pred_cam_t': first.get('pred_cam_t'),
                 'focal_length': float(first.get('focal_length', 1.0)),
             }
+            # Debug: print init_params
+            print(f"\n[OPT] init_params keys: {list(init_params.keys())}")
+            for k, v in init_params.items():
+                if v is not None:
+                    if hasattr(v, 'shape'):
+                        print(f"  {k}: shape={v.shape}")
+                    else:
+                        print(f"  {k}: {v}")
+                else:
+                    print(f"  {k}: None")
 
             # Build camera intrinsics matrix
             if cam_int is not None:
@@ -452,6 +467,7 @@ def main(args):
                 opt_cam_K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
 
             opt_out_prefix = os.path.join(output_folder, f"opt_{os.path.splitext(out_name)[0]}")
+            print(f"\n[OPT] Frame {idx}: Running pose optimization, iters={args.opt_iters}")
             opt_result = optimize_mhr_pose(
                 estimator.model.head_pose,
                 init_params,
@@ -464,7 +480,7 @@ def main(args):
                 num_iters=args.opt_iters,
                 lr=args.opt_lr,
             )
-            print(f"Frame {idx}: init_loss={opt_result['init_loss']:.1f}, final_loss={opt_result['final_loss']:.1f}")
+            print(f"[OPT] Frame {idx}: init_loss={opt_result['init_loss']:.1f}, final_loss={opt_result['final_loss']:.1f}, improvement={100*(1-opt_result['final_loss']/opt_result['init_loss']):.1f}%")
             losses.append({
                 "frame": out_name,
                 "init_loss": float(opt_result['init_loss']),

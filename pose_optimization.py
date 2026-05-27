@@ -148,15 +148,14 @@ def visualize_sapiens_keypoints(img: np.ndarray, keypoints: np.ndarray, out_path
 def _project_points(pts3: torch.Tensor, cam_K: np.ndarray, cam_t: torch.Tensor, focal_length: float = 1.0):
     """Project 3D points (N,3) to image plane, matching model's pred_keypoints_2d.
 
-    Model pipeline (sam3d_body.py:1628-1645) - weak perspective projection:
-      1. kps_cam = pred_keypoints_3d + pred_cam_t
-      2. X *= focal_length, Y *= focal_length
-      3. X += cx * Z, Y += cy * Z
-      4. X /= Z, Y /= Z
+    Model pipeline (mhr_head.py forward() + sam3d_body.py projection):
+      1. mhr_forward returns keypoints in Y-up model coords
+      2. forward() flips Y/Z: j3d[..., [1, 2]] *= -1
+      3. Projection: (j3d_flipped + cam_t) -> weak perspective
 
-    pts3: torch tensor (N,3) - MHR 3D keypoints in camera coordinates
+    pts3: torch tensor (N,3) - MHR 3D keypoints from mhr_forward (Y-up)
     cam_K: numpy 3x3 camera intrinsics
-    cam_t: torch tensor (3,) - camera translation (pred_cam_t)
+    cam_t: torch tensor (3,) - camera translation (pred_cam_t, defined in flipped coords)
     focal_length: float - model's focal length
 
     Returns: torch tensor (N,2) projected 2D coordinates
@@ -166,21 +165,25 @@ def _project_points(pts3: torch.Tensor, cam_K: np.ndarray, cam_t: torch.Tensor, 
     if pts3.dim() == 3 and pts3.shape[0] == 1:
         pts3 = pts3[0]
 
-    # Step 1: apply camera translation
-    kps_cam = pts3 + cam_t  # (N,3)
+    # Flip Y/Z to match model's forward() output (camera system difference)
+    pts3_flipped = pts3.clone()
+    pts3_flipped[:, 1] *= -1
+    pts3_flipped[:, 2] *= -1
 
-    # Step 2: apply focal length to X, Y (non-inplace)
+    # Add camera translation
+    kps_cam = pts3_flipped + cam_t  # (N,3)
+
+    # Weak Perspective projection (matching sam3d_body.py)
     cx = float(cam_K[0, 2])
     cy = float(cam_K[1, 2])
+    eps = 1e-6
 
-    X = kps_cam[:, 0] * focal_length + cx * kps_cam[:, 2]
-    Y = kps_cam[:, 1] * focal_length + cy * kps_cam[:, 2]
+    X = kps_cam[:, 0]
+    Y = kps_cam[:, 1]
     Z = kps_cam[:, 2]
 
-    # Step 3: divide by Z
-    eps = 1e-6
-    proj_u = X / (Z + eps)
-    proj_v = Y / (Z + eps)
+    proj_u = X * focal_length / (Z + eps) + cx
+    proj_v = Y * focal_length / (Z + eps) + cy
 
     return torch.stack([proj_u, proj_v], dim=1)
 
@@ -303,7 +306,11 @@ def optimize_mhr_pose(
     if cam_t is None:
         cam_t = torch.zeros(1, 3, device=dev)
     else:
-        cam_t = cam_t.to(dev).float().unsqueeze(0)
+        cam_t = cam_t.to(dev).float()
+        if cam_t.dim() == 1:
+            cam_t = cam_t.unsqueeze(0)
+        elif cam_t.dim() > 2:
+            cam_t = cam_t.view(1, -1)[:,:3]
     cam_t = cam_t.clone().detach()
     cam_t.requires_grad = True
     optim_vars.append(cam_t)
@@ -399,102 +406,6 @@ def optimize_mhr_pose(
     # After optimization, get final verts and proj
     with torch.no_grad():
         proj_final, verts_final = forward_and_project()
-
-    # Snapshot final camera translation for saving
-    cam_t_optimized = cam_t.squeeze(0).detach().cpu().numpy()
-    # Snapshot initial params for saving before state (before cam_t was modified)
-    cam_t_init = to_t(init_params.get("pred_cam_t"))
-    if cam_t_init is None:
-        cam_t_init = torch.zeros(3, device=dev)
-    cam_t_init_np = cam_t_init.detach().cpu().numpy()
-
-    # Save before/after visualizations and meshes
-    # NOTE: Renderer expects vertices in Y-down coordinates (after j3d[...,[1,2]]*=-1).
-    # mhr_forward returns Y-up, so we must flip Y and Z before saving.
-    LIGHT_BLUE = (0.65098039, 0.74117647, 0.85882353)
-    save_dir = os.path.dirname(out_prefix)
-    os.makedirs(save_dir, exist_ok=True)
-    
-    def _verts_for_renderer(v):
-        v = v.squeeze(0).cpu().numpy().copy()
-        v[:, 1] *= -1
-        v[:, 2] *= -1
-        return v
-    
-    verts_before_render = _verts_for_renderer(verts_init)
-    verts_after_render = _verts_for_renderer(verts_final)
-    
-    try:
-        from sam_3d_body.visualization.renderer import Renderer as _Renderer
-        f = float(init_params.get("focal_length", 1.0))
-        renderer = _Renderer(focal_length=f, faces=faces)
-
-        # Save before
-        base = out_prefix + "_before"
-        try:
-            tmesh = renderer.vertices_to_trimesh(verts_before_render, cam_t_init_np, LIGHT_BLUE)
-            tmesh.export(base + "_mesh.ply")
-            print(f"Saved mesh: {base}_mesh.ply")
-        except Exception as e:
-            print(f"Warning: could not save before mesh: {e}")
-        try:
-            overlay = (renderer(verts_before_render, cam_t_init_np, img.copy(),
-                                mesh_base_color=LIGHT_BLUE, scene_bg_color=(1, 1, 1)) * 255).astype(np.uint8)
-            cv2.imwrite(base + "_overlay.png", overlay)
-            print(f"Saved overlay: {base}_overlay.png")
-        except Exception as e:
-            print(f"Warning: could not save before overlay: {e}")
-
-        # Save after
-        base = out_prefix + "_after"
-        try:
-            tmesh = renderer.vertices_to_trimesh(verts_after_render, cam_t_optimized, LIGHT_BLUE)
-            tmesh.export(base + "_mesh.ply")
-            print(f"Saved mesh: {base}_mesh.ply")
-        except Exception as e:
-            print(f"Warning: could not save after mesh: {e}")
-        try:
-            overlay = (renderer(verts_after_render, cam_t_optimized, img.copy(),
-                                mesh_base_color=LIGHT_BLUE, scene_bg_color=(1, 1, 1)) * 255).astype(np.uint8)
-            cv2.imwrite(base + "_overlay.png", overlay)
-            print(f"Saved overlay: {base}_overlay.png")
-        except Exception as e:
-            print(f"Warning: could not save after overlay: {e}")
-
-        # Save keypoint projections (drawn using _project_points logic)
-        h_img, w_img = img.shape[:2]
-        target_np = target_kps.cpu().numpy()
-        
-        vis_init = img.copy()
-        init_proj_np = proj_init.cpu().numpy()
-        for i in range(min(len(init_proj_np), len(target_np))):
-            if i >= vis_mask.shape[0] or not vis_mask[i]:
-                continue
-            tx, ty = int(target_np[i, 0]), int(target_np[i, 1])
-            px, py = int(init_proj_np[i, 0]), int(init_proj_np[i, 1])
-            if 0 <= tx < w_img and 0 <= ty < h_img:
-                cv2.circle(vis_init, (tx, ty), 3, (0, 255, 0), -1)
-            if 0 <= px < w_img and 0 <= py < h_img:
-                cv2.circle(vis_init, (px, py), 2, (0, 0, 255), -1)
-        cv2.imwrite(out_prefix + "_init_kps.png", vis_init)
-        
-        vis_final = img.copy()
-        final_proj_np = proj_final.cpu().numpy()
-        for i in range(min(len(final_proj_np), len(target_np))):
-            if i >= vis_mask.shape[0] or not vis_mask[i]:
-                continue
-            tx, ty = int(target_np[i, 0]), int(target_np[i, 1])
-            px, py = int(final_proj_np[i, 0]), int(final_proj_np[i, 1])
-            if 0 <= tx < w_img and 0 <= ty < h_img:
-                cv2.circle(vis_final, (tx, ty), 3, (0, 255, 0), -1)
-            if 0 <= px < w_img and 0 <= py < h_img:
-                cv2.circle(vis_final, (px, py), 2, (0, 0, 255), -1)
-        cv2.imwrite(out_prefix + "_final_kps.png", vis_final)
-        print(f"Saved keypoint projections: {out_prefix}_[init|final]_kps.png")
-    except ImportError as e:
-        print("Warning: could not save mesh/overlay (Renderer import failed):", e)
-    except Exception as e:
-        print("Warning: could not save mesh/overlay:", e)
 
     # Clean up GPU memory
     if dev.type == "cuda":

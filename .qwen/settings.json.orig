@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(/home/gj/miniconda3/envs/sam3d/bin/python *)"
+      "Bash(/home/gj/miniconda3/envs/sam3d/bin/python *)",
+      "Bash(nvidia-smi *)",
+      "Bash(timeout *)",
+      "Bash(ls *)"
     ]
   },
   "$version": 4
