@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import roma
 import os
+import cv2
 
 
 def numpy_to_torch(array, device=None):
@@ -72,7 +73,97 @@ class MHRUtils:
 
         return vertices
 
-    
+    def get_joints_3d(self, outputs):
+        identity_coeffs = numpy_to_torch(outputs['shape_params'], self.device)
+        model_parameters = numpy_to_torch(outputs['mhr_model_params'], self.device)
+        face_expr_coeffs = numpy_to_torch(outputs['expr_params'], self.device)
+
+        vertices, skeleton_state = self.mhr_model(
+            identity_coeffs=identity_coeffs,
+            model_parameters=model_parameters,
+            face_expr_coeffs=face_expr_coeffs,
+        )
+
+        # Split skeleton state to get joint coordinates
+        joint_coords, joint_quats, _ = torch.split(skeleton_state, [3, 4, 1], dim=2)
+
+        vertices = vertices / 100.
+        joint_coords = joint_coords / 100.
+
+        model_vert_joints = torch.cat(
+                [vertices, joint_coords], dim=1
+            )  # B x (num_verts + 127) x 3
+
+        j3d = (
+            (
+                self.keypoint_mapping
+                @ model_vert_joints.permute(1, 0, 2).flatten(1, 2)
+            )
+            .reshape(-1, model_vert_joints.shape[0], 3)
+            .permute(1, 0, 2)
+        )
+        j3d = j3d[:, :70]  # 308 --> 70 keypoints
+        j3d[..., [1, 2]] *= -1  # Camera system difference
+
+        return j3d.squeeze(0)
+
+    def project_joints_to_2d(self, outputs, img, output_image_path=None):
+        j3d = self.get_joints_3d(outputs)
+        height, width = img.shape[:2]
+
+        focal_length = outputs.get('focal_length', 1.0)
+        pred_cam_t = outputs.get('pred_cam_t')
+
+        # 确保维度对齐以进行广播计算
+        # j3d is (1, 70, 3)
+        if j3d.dim() == 2:
+            j3d = j3d.unsqueeze(0)
+
+        focal_length = torch.tensor(focal_length, device=j3d.device).float()
+        if focal_length.dim() == 0:
+            focal_length = focal_length.view(1, 1, 1)  # Scalar -> (1, 1, 1)
+
+        pred_cam_t = torch.tensor(pred_cam_t, device=j3d.device).float()
+        if pred_cam_t.dim() == 1:
+            pred_cam_t = pred_cam_t.unsqueeze(0).unsqueeze(0)  # (3,) -> (1, 1, 3)
+        elif pred_cam_t.dim() == 2:
+            pred_cam_t = pred_cam_t.unsqueeze(1)  # (1, 3) -> (1, 1, 3)
+
+        pred_keypoints_3d_proj = j3d + pred_cam_t
+        # 直接相乘，因为维度已经对齐
+        pred_keypoints_3d_proj[:, :, [0, 1]] *= focal_length
+        
+        # 图像中心偏移
+        pred_keypoints_3d_proj[:, :, [0, 1]] = (
+            pred_keypoints_3d_proj[:, :, [0, 1]]
+            + torch.FloatTensor([width / 2, height / 2]).to(pred_keypoints_3d_proj)[None, None, :]
+            * pred_keypoints_3d_proj[:, :, [2]]
+        )
+        
+        # 透视除法
+        pred_keypoints_3d_proj[:, :, :2] = (
+            pred_keypoints_3d_proj[:, :, :2] / pred_keypoints_3d_proj[:, :, [2]]
+        )
+        
+        pred_keypoints_2d = pred_keypoints_3d_proj[:, :, :2]
+
+        if output_image_path is not None:
+            # Draw keypoints on image
+            vis_img = img.copy()
+            kps_2d = pred_keypoints_2d.squeeze(0).cpu().numpy() # Shape: (70, 2)
+            for i, (x, y) in enumerate(kps_2d):
+                x, y = int(x), int(y)
+                if 0 <= x < width and 0 <= y < height:
+                    cv2.circle(vis_img, (x, y), 3, (0, 255, 0), -1)
+            
+            out_dir = os.path.dirname(output_image_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            cv2.imwrite(output_image_path, vis_img)
+            print(f"[INFO] Saved projected keypoints image to {output_image_path}")
+
+        return pred_keypoints_2d
+
     def _inference_wrt_rt(self, outputs):
         """Run inference with MHR from SAM3D outputs"""
         # Convert inputs to tensors on the correct device

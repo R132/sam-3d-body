@@ -26,6 +26,28 @@ from tools.vis_utils import visualize_sample, visualize_sample_together
 from hmr_utils import MHRUtils
 
 
+def save_keypoint_mapping(estimator, mhr_path):
+    # --- Save keypoint mapping to file ---
+    # Access the keypoint_mapping from the model head
+    mapping_param = estimator.model.head_pose.keypoint_mapping
+    mapping_tensor = mapping_param.detach().cpu()
+    non_zero_count = (mapping_tensor != 0).sum().item()
+    valid_rows = (mapping_tensor.norm(dim=1) > 0).sum().item()
+    
+    print(f"[CHECK] 非零元素总数: {non_zero_count}")  # 2625
+    print(f"[CHECK] 有效的关键点行数 (应为 308): {valid_rows}")  # 308
+
+    print(f"\n[INFO] keypoint_mapping shape: {mapping_tensor.shape}")
+    print(f"[INFO] keypoint_mapping first 10 values (flattened): {mapping_tensor.view(-1)[:10]}")  # all zeros
+
+    # Save to the same directory as the MHR model
+    mhr_dir = os.path.dirname(mhr_path)
+    save_path = os.path.join(mhr_dir, "keypoint_mapping.pt")
+    torch.save(mapping_tensor, save_path)
+    print(f"[INFO] Saved keypoint_mapping to {save_path}\n")
+    # ------------------------------------
+
+
 def parse_colmap_cameras(cameras_txt_path):
     cams = {}
     if not os.path.exists(cameras_txt_path):
@@ -350,26 +372,6 @@ def main(args):
         fov_estimator=fov_estimator,
     )
 
-    # --- Save keypoint mapping to file ---
-    # Access the keypoint_mapping from the model head
-    mapping_param = estimator.model.head_pose.keypoint_mapping
-    mapping_tensor = mapping_param.detach().cpu()
-    non_zero_count = (mapping_tensor != 0).sum().item()
-    valid_rows = (mapping_tensor.norm(dim=1) > 0).sum().item()
-    
-    print(f"[CHECK] 非零元素总数: {non_zero_count}")  # 2625
-    print(f"[CHECK] 有效的关键点行数 (应为 308): {valid_rows}")  # 308
-
-    print(f"\n[INFO] keypoint_mapping shape: {mapping_tensor.shape}")
-    print(f"[INFO] keypoint_mapping first 10 values (flattened): {mapping_tensor.view(-1)[:10]}")  # all zeros
-
-    # Save to the same directory as the MHR model
-    mhr_dir = os.path.dirname(mhr_path)
-    save_path = os.path.join(mhr_dir, "keypoint_mapping.pt")
-    torch.save(mapping_tensor, save_path)
-    print(f"[INFO] Saved keypoint_mapping to {save_path}\n")
-    # ------------------------------------
-
     mhr_utils_model = MHRUtils(mhr_path)
     losses = []
 
@@ -402,19 +404,17 @@ def main(args):
         # original visualization (without keypoint comparison)
         if args.save_mesh and idx % args.mesh_save_interval == 0:
             save_mesh_results(img, outputs, estimator.faces, output_folder, os.path.splitext(out_name)[0])
-
-        # mhr_vertices = mhr_utils_model.inference(outputs[0])
         
         # DEBUG: print output keys for first frame
         if idx == 0:
             print(f"\n[DEBUG] Output keys: {list(outputs[0].keys())}")
         
-        mhr_utils_model._test_mhr_inference(outputs[0])  # correct
+        # mhr_vertices = mhr_utils_model.inference(outputs[0])
+        # mhr_utils_model._test_mhr_inference(outputs[0])  # correct
+        mhr_utils_model.project_joints_to_2d(outputs[0], img, output_image_path=os.path.join(output_folder, f"projected_joints_{out_name}"))  # correct
 
         # visualize prediction results together with input image
-        img = cv2.imread(img_path)
         rend_img = visualize_sample_together(img, outputs, estimator.faces)
-        out_name = os.path.basename(img_path)
         cv2.imwrite(os.path.join(output_folder, out_name), rend_img.astype(np.uint8))
         print(f"Frame {idx}: saved {out_name}")
 
