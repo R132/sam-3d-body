@@ -2,6 +2,8 @@
 import argparse
 import os
 from glob import glob
+from tqdm import tqdm
+import json
 
 import pyrootutils
 
@@ -20,8 +22,8 @@ from sam_3d_body.metadata.mhr70 import pose_info as mhr70_pose_info
 from notebook.utils import save_mesh_results
 from pose_optimization import test_visualize_sapiens, load_sapiens_predictions, optimize_mhr_pose
 from tools.vis_utils import visualize_sample, visualize_sample_together
-from tqdm import tqdm
-import json
+
+from hmr_utils import MHRUtils
 
 
 def parse_colmap_cameras(cameras_txt_path):
@@ -348,6 +350,27 @@ def main(args):
         fov_estimator=fov_estimator,
     )
 
+    # --- Save keypoint mapping to file ---
+    # Access the keypoint_mapping from the model head
+    mapping_param = estimator.model.head_pose.keypoint_mapping
+    mapping_tensor = mapping_param.detach().cpu()
+    non_zero_count = (mapping_tensor != 0).sum().item()
+    valid_rows = (mapping_tensor.norm(dim=1) > 0).sum().item()
+    
+    print(f"[CHECK] 非零元素总数: {non_zero_count}")  # 2625
+    print(f"[CHECK] 有效的关键点行数 (应为 308): {valid_rows}")  # 308
+
+    print(f"\n[INFO] keypoint_mapping shape: {mapping_tensor.shape}")
+    print(f"[INFO] keypoint_mapping first 10 values (flattened): {mapping_tensor.view(-1)[:10]}")  # all zeros
+
+    # Save to the same directory as the MHR model
+    mhr_dir = os.path.dirname(mhr_path)
+    save_path = os.path.join(mhr_dir, "keypoint_mapping.pt")
+    torch.save(mapping_tensor, save_path)
+    print(f"[INFO] Saved keypoint_mapping to {save_path}\n")
+    # ------------------------------------
+
+    mhr_utils_model = MHRUtils(mhr_path)
     losses = []
 
     for idx, frame in enumerate(tqdm(seq)):
@@ -367,147 +390,160 @@ def main(args):
         outputs = estimator.process_one_image(
             img_path,
             bboxes=None,
-            masks=masks,
+            masks=None,
             cam_int=cam_int,
             bbox_thr=args.bbox_thresh,
-            use_mask=bool(masks is not None),
+            use_mask=False,
         )
 
+        img = cv2.imread(img_path)
+        out_name = os.path.basename(img_path)
+
+        # original visualization (without keypoint comparison)
+        if args.save_mesh and idx % args.mesh_save_interval == 0:
+            save_mesh_results(img, outputs, estimator.faces, output_folder, os.path.splitext(out_name)[0])
+
+        # mhr_vertices = mhr_utils_model.inference(outputs[0])
+        
+        # DEBUG: print output keys for first frame
+        if idx == 0:
+            print(f"\n[DEBUG] Output keys: {list(outputs[0].keys())}")
+        
+        mhr_utils_model._test_mhr_inference(outputs[0])  # correct
+
+        # visualize prediction results together with input image
         img = cv2.imread(img_path)
         rend_img = visualize_sample_together(img, outputs, estimator.faces)
         out_name = os.path.basename(img_path)
         cv2.imwrite(os.path.join(output_folder, out_name), rend_img.astype(np.uint8))
         print(f"Frame {idx}: saved {out_name}")
 
-        if args.save_mesh and idx % args.mesh_save_interval == 0:
-            save_mesh_results(img, outputs, estimator.faces, output_folder, os.path.splitext(out_name)[0])
+    #     # Load keypoints for this frame: check keypoints_folder first, then sapiens dict
+    #     kp2d = None
+    #     kp2d_full = None  # original 308 keypoints from Sapiens
+    #     if args.keypoints_folder:
+    #         kp2d_full = load_keypoints2d_for_image(args.keypoints_folder, out_name)
+    #         if kp2d_full is not None:
+    #             print(f"Frame {idx}: loaded keypoints from {args.keypoints_folder}, shape={kp2d_full.shape}")
+    #     if kp2d_full is None and sapiens_kps_dict is not None:
+    #         stem = os.path.splitext(out_name)[0]
+    #         if stem in sapiens_kps_dict:
+    #             kp2d_full = sapiens_kps_dict[stem]
+    #             print(f"Frame {idx}: loaded sapiens keypoints, shape={kp2d_full.shape}")
+    #         elif out_name in sapiens_kps_dict:
+    #             kp2d_full = sapiens_kps_dict[out_name]
+    #         elif out_name.lower() in sapiens_kps_dict:
+    #             kp2d_full = sapiens_kps_dict[out_name.lower()]
 
-        # Load keypoints for this frame: check keypoints_folder first, then sapiens dict
-        kp2d = None
-        kp2d_full = None  # original 308 keypoints from Sapiens
-        if args.keypoints_folder:
-            kp2d_full = load_keypoints2d_for_image(args.keypoints_folder, out_name)
-            if kp2d_full is not None:
-                print(f"Frame {idx}: loaded keypoints from {args.keypoints_folder}, shape={kp2d_full.shape}")
-        if kp2d_full is None and sapiens_kps_dict is not None:
-            stem = os.path.splitext(out_name)[0]
-            if stem in sapiens_kps_dict:
-                kp2d_full = sapiens_kps_dict[stem]
-                print(f"Frame {idx}: loaded sapiens keypoints, shape={kp2d_full.shape}")
-            elif out_name in sapiens_kps_dict:
-                kp2d_full = sapiens_kps_dict[out_name]
-            elif out_name.lower() in sapiens_kps_dict:
-                kp2d_full = sapiens_kps_dict[out_name.lower()]
+    #     # Map 308 Sapiens keypoints → 70 MHR keypoints
+    #     if kp2d_full is not None:
+    #         mhr70_idxs = list(mhr70_pose_info["original_keypoint_info"].keys())
+    #         kp2d = kp2d_full[mhr70_idxs]  # (70, 2) or (70, 3)
+    #         print(f"Frame {idx}: mapped to MHR70 keypoints, shape={kp2d.shape}")
 
-        # Map 308 Sapiens keypoints → 70 MHR keypoints
-        if kp2d_full is not None:
-            mhr70_idxs = list(mhr70_pose_info["original_keypoint_info"].keys())
-            kp2d = kp2d_full[mhr70_idxs]  # (70, 2) or (70, 3)
-            print(f"Frame {idx}: mapped to MHR70 keypoints, shape={kp2d.shape}")
+    #     # Visualize 2D keypoints (before optimization)
+    #     if kp2d_full is not None:
+    #         kps_vis = img.copy()
+    #         kps = kp2d_full.copy()
+    #         if kps.ndim == 1:
+    #             if kps.size % 3 == 0:
+    #                 kps = kps.reshape(-1, 3)
+    #             elif kps.size % 2 == 0:
+    #                 kps = kps.reshape(-1, 2)
+    #         pts = kps[:, :2]
+    #         conf = kps[:, 2] if kps.shape[1] >= 3 else np.ones(len(pts))
+    #         for (x, y), c in zip(pts, conf):
+    #             if np.isnan(x) or np.isnan(y) or c < 0.05:
+    #                 continue
+    #             cv2.circle(kps_vis, (int(x), int(y)), 3, (0, 255, 0), -1)
+    #         kp_out_path = os.path.join(output_folder, f"kps_{os.path.splitext(out_name)[0]}.jpg")
+    #         cv2.imwrite(kp_out_path, kps_vis)
 
-        # Visualize 2D keypoints (before optimization)
-        if kp2d_full is not None:
-            kps_vis = img.copy()
-            kps = kp2d_full.copy()
-            if kps.ndim == 1:
-                if kps.size % 3 == 0:
-                    kps = kps.reshape(-1, 3)
-                elif kps.size % 2 == 0:
-                    kps = kps.reshape(-1, 2)
-            pts = kps[:, :2]
-            conf = kps[:, 2] if kps.shape[1] >= 3 else np.ones(len(pts))
-            for (x, y), c in zip(pts, conf):
-                if np.isnan(x) or np.isnan(y) or c < 0.05:
-                    continue
-                cv2.circle(kps_vis, (int(x), int(y)), 3, (0, 255, 0), -1)
-            kp_out_path = os.path.join(output_folder, f"kps_{os.path.splitext(out_name)[0]}.jpg")
-            cv2.imwrite(kp_out_path, kps_vis)
+    #     # Save keypoint comparison (Sapiens 2D + MHR 3D projected)
+    #     if len(outputs) > 0 and kp2d is not None:
+    #         if cam_int is not None:
+    #             comp_cam_K = cam_int.squeeze(0).cpu().numpy()
+    #         else:
+    #             hf, wf = img.shape[:2]
+    #             f = float(outputs[0].get("focal_length", 1.0))
+    #             comp_cam_K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    #         comp_out_path = os.path.join(output_folder, f"kps_cmp_{os.path.splitext(out_name)[0]}.jpg")
+    #         save_keypoint_comparison(img, outputs, kp2d, comp_cam_K, comp_out_path)
 
-        # Save keypoint comparison (Sapiens 2D + MHR 3D projected)
-        if len(outputs) > 0 and kp2d is not None:
-            if cam_int is not None:
-                comp_cam_K = cam_int.squeeze(0).cpu().numpy()
-            else:
-                hf, wf = img.shape[:2]
-                f = float(outputs[0].get("focal_length", 1.0))
-                comp_cam_K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-            comp_out_path = os.path.join(output_folder, f"kps_cmp_{os.path.splitext(out_name)[0]}.jpg")
-            save_keypoint_comparison(img, outputs, kp2d, comp_cam_K, comp_out_path)
+    #     # Run MHR pose optimization if sapiens keypoints are available
+    #     if len(outputs) > 0 and kp2d is not None:
+    #         first = outputs[0]
+    #         init_params = {
+    #             'global_rot': first.get('global_rot'),
+    #             'body_pose_params': first.get('body_pose_params'),
+    #             'hand_pose_params': first.get('hand_pose_params'),
+    #             'scale_params': first.get('scale_params'),
+    #             'shape_params': first.get('shape_params'),
+    #             'expr_params': first.get('expr_params'),
+    #             'pred_cam_t': first.get('pred_cam_t'),
+    #             'focal_length': float(first.get('focal_length', 1.0)),
+    #         }
+    #         # Debug: print init_params
+    #         print(f"\n[OPT] init_params keys: {list(init_params.keys())}")
+    #         for k, v in init_params.items():
+    #             if v is not None:
+    #                 if hasattr(v, 'shape'):
+    #                     print(f"  {k}: shape={v.shape}")
+    #                 else:
+    #                     print(f"  {k}: {v}")
+    #             else:
+    #                 print(f"  {k}: None")
 
-        # Run MHR pose optimization if sapiens keypoints are available
-        if len(outputs) > 0 and kp2d is not None:
-            first = outputs[0]
-            init_params = {
-                'global_rot': first.get('global_rot'),
-                'body_pose_params': first.get('body_pose_params'),
-                'hand_pose_params': first.get('hand_pose_params'),
-                'scale_params': first.get('scale_params'),
-                'shape_params': first.get('shape_params'),
-                'expr_params': first.get('expr_params'),
-                'pred_cam_t': first.get('pred_cam_t'),
-                'focal_length': float(first.get('focal_length', 1.0)),
-            }
-            # Debug: print init_params
-            print(f"\n[OPT] init_params keys: {list(init_params.keys())}")
-            for k, v in init_params.items():
-                if v is not None:
-                    if hasattr(v, 'shape'):
-                        print(f"  {k}: shape={v.shape}")
-                    else:
-                        print(f"  {k}: {v}")
-                else:
-                    print(f"  {k}: None")
+    #         # Build camera intrinsics matrix
+    #         if cam_int is not None:
+    #             opt_cam_K = cam_int.squeeze(0).cpu().numpy()
+    #         else:
+    #             hf, wf = img.shape[:2]
+    #             f = float(first.get('focal_length', 1.0))
+    #             opt_cam_K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
 
-            # Build camera intrinsics matrix
-            if cam_int is not None:
-                opt_cam_K = cam_int.squeeze(0).cpu().numpy()
-            else:
-                hf, wf = img.shape[:2]
-                f = float(first.get('focal_length', 1.0))
-                opt_cam_K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    #         opt_out_prefix = os.path.join(output_folder, f"opt_{os.path.splitext(out_name)[0]}")
+    #         print(f"\n[OPT] Frame {idx}: Running pose optimization, iters={args.opt_iters}")
+    #         opt_result = optimize_mhr_pose(
+    #             estimator.model.head_pose,
+    #             init_params,
+    #             kp2d,
+    #             opt_cam_K,
+    #             img,
+    #             estimator.faces,
+    #             opt_out_prefix,
+    #             device=device,
+    #             num_iters=args.opt_iters,
+    #             lr=args.opt_lr,
+    #         )
+    #         print(f"[OPT] Frame {idx}: init_loss={opt_result['init_loss']:.1f}, final_loss={opt_result['final_loss']:.1f}, improvement={100*(1-opt_result['final_loss']/opt_result['init_loss']):.1f}%")
+    #         losses.append({
+    #             "frame": out_name,
+    #             "init_loss": float(opt_result['init_loss']),
+    #             "final_loss": float(opt_result['final_loss']),
+    #         })
 
-            opt_out_prefix = os.path.join(output_folder, f"opt_{os.path.splitext(out_name)[0]}")
-            print(f"\n[OPT] Frame {idx}: Running pose optimization, iters={args.opt_iters}")
-            opt_result = optimize_mhr_pose(
-                estimator.model.head_pose,
-                init_params,
-                kp2d,
-                opt_cam_K,
-                img,
-                estimator.faces,
-                opt_out_prefix,
-                device=device,
-                num_iters=args.opt_iters,
-                lr=args.opt_lr,
-            )
-            print(f"[OPT] Frame {idx}: init_loss={opt_result['init_loss']:.1f}, final_loss={opt_result['final_loss']:.1f}, improvement={100*(1-opt_result['final_loss']/opt_result['init_loss']):.1f}%")
-            losses.append({
-                "frame": out_name,
-                "init_loss": float(opt_result['init_loss']),
-                "final_loss": float(opt_result['final_loss']),
-            })
+    #     # Fallback: compute simple reprojection loss if no sapiens keypoints
+    #     elif len(outputs) > 0 and kp2d is not None and "pred_keypoints_3d" in outputs[0]:
+    #         first = outputs[0]
+    #         pred_k3d = np.array(first["pred_keypoints_3d"])
+    #         if cam_int is not None:
+    #             K = cam_int.squeeze(0).cpu().numpy()
+    #         elif "focal_length" in first:
+    #             hf, wf = img.shape[:2]
+    #             f = first.get("focal_length", 1.0)
+    #             K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    #         else:
+    #             K = np.array([[1.0, 0.0, img.shape[1] / 2.0], [0.0, 1.0, img.shape[0] / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    #         mse, _ = reprojection_loss(pred_k3d, K, kp2d)
+    #         if mse is not None:
+    #             losses.append({"frame": out_name, "mse": float(mse)})
 
-        # Fallback: compute simple reprojection loss if no sapiens keypoints
-        elif len(outputs) > 0 and kp2d is not None and "pred_keypoints_3d" in outputs[0]:
-            first = outputs[0]
-            pred_k3d = np.array(first["pred_keypoints_3d"])
-            if cam_int is not None:
-                K = cam_int.squeeze(0).cpu().numpy()
-            elif "focal_length" in first:
-                hf, wf = img.shape[:2]
-                f = first.get("focal_length", 1.0)
-                K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-            else:
-                K = np.array([[1.0, 0.0, img.shape[1] / 2.0], [0.0, 1.0, img.shape[0] / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-            mse, _ = reprojection_loss(pred_k3d, K, kp2d)
-            if mse is not None:
-                losses.append({"frame": out_name, "mse": float(mse)})
-
-    # Save losses summary if any
-    if len(losses) > 0:
-        with open(os.path.join(output_folder, "reproj_losses.json"), "w") as f:
-            json.dump(losses, f, indent=2)
-        print("Saved reprojection losses to", os.path.join(output_folder, "reproj_losses.json"))
+    # # Save losses summary if any
+    # if len(losses) > 0:
+    #     with open(os.path.join(output_folder, "reproj_losses.json"), "w") as f:
+    #         json.dump(losses, f, indent=2)
+    #     print("Saved reprojection losses to", os.path.join(output_folder, "reproj_losses.json"))
 
 
 if __name__ == "__main__":
