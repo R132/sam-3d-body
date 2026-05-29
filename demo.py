@@ -23,7 +23,7 @@ from notebook.utils import save_mesh_results
 from pose_optimization import test_visualize_sapiens, load_sapiens_predictions, optimize_mhr_pose
 from tools.vis_utils import visualize_sample, visualize_sample_together
 
-from hmr_utils import MHRUtils
+from hmr_utils import MHRUtils, load_sapiens_kps, visualize_keypoints_on_image, visualize_dual_keypoints_on_image
 
 
 def save_keypoint_mapping(estimator, mhr_path):
@@ -411,64 +411,18 @@ def main(args):
         
         # mhr_vertices = mhr_utils_model.inference(outputs[0])
         # mhr_utils_model._test_mhr_inference(outputs[0])  # correct
-        mhr_utils_model.project_joints_to_2d(outputs[0], img, output_image_path=os.path.join(output_folder, f"projected_joints_{out_name}"))  # correct
+        pred_keypoints_2d = mhr_utils_model.project_joints_to_2d(outputs[0], img, output_image_path=os.path.join(output_folder, f"projected_joints_{out_name}"))  # correct
+        pred_keypoints_2d = pred_keypoints_2d.cpu().numpy()
 
         # visualize prediction results together with input image
         rend_img = visualize_sample_together(img, outputs, estimator.faces)
         cv2.imwrite(os.path.join(output_folder, out_name), rend_img.astype(np.uint8))
         print(f"Frame {idx}: saved {out_name}")
 
-    #     # Load keypoints for this frame: check keypoints_folder first, then sapiens dict
-    #     kp2d = None
-    #     kp2d_full = None  # original 308 keypoints from Sapiens
-    #     if args.keypoints_folder:
-    #         kp2d_full = load_keypoints2d_for_image(args.keypoints_folder, out_name)
-    #         if kp2d_full is not None:
-    #             print(f"Frame {idx}: loaded keypoints from {args.keypoints_folder}, shape={kp2d_full.shape}")
-    #     if kp2d_full is None and sapiens_kps_dict is not None:
-    #         stem = os.path.splitext(out_name)[0]
-    #         if stem in sapiens_kps_dict:
-    #             kp2d_full = sapiens_kps_dict[stem]
-    #             print(f"Frame {idx}: loaded sapiens keypoints, shape={kp2d_full.shape}")
-    #         elif out_name in sapiens_kps_dict:
-    #             kp2d_full = sapiens_kps_dict[out_name]
-    #         elif out_name.lower() in sapiens_kps_dict:
-    #             kp2d_full = sapiens_kps_dict[out_name.lower()]
+        kp2d_sapiens = load_sapiens_kps(os.path.join(input_root, "sapiens_pose", "sapiens_pose_predictions.json"))[out_name][:70]
+        visualize_keypoints_on_image(img, kp2d_sapiens, os.path.join(output_folder, f"sapiens_70_kps_{out_name}"))
+        visualize_dual_keypoints_on_image(img, kp2d_sapiens, pred_keypoints_2d, os.path.join(output_folder, f"dual_kps_{out_name}"))
 
-    #     # Map 308 Sapiens keypoints → 70 MHR keypoints
-    #     if kp2d_full is not None:
-    #         mhr70_idxs = list(mhr70_pose_info["original_keypoint_info"].keys())
-    #         kp2d = kp2d_full[mhr70_idxs]  # (70, 2) or (70, 3)
-    #         print(f"Frame {idx}: mapped to MHR70 keypoints, shape={kp2d.shape}")
-
-    #     # Visualize 2D keypoints (before optimization)
-    #     if kp2d_full is not None:
-    #         kps_vis = img.copy()
-    #         kps = kp2d_full.copy()
-    #         if kps.ndim == 1:
-    #             if kps.size % 3 == 0:
-    #                 kps = kps.reshape(-1, 3)
-    #             elif kps.size % 2 == 0:
-    #                 kps = kps.reshape(-1, 2)
-    #         pts = kps[:, :2]
-    #         conf = kps[:, 2] if kps.shape[1] >= 3 else np.ones(len(pts))
-    #         for (x, y), c in zip(pts, conf):
-    #             if np.isnan(x) or np.isnan(y) or c < 0.05:
-    #                 continue
-    #             cv2.circle(kps_vis, (int(x), int(y)), 3, (0, 255, 0), -1)
-    #         kp_out_path = os.path.join(output_folder, f"kps_{os.path.splitext(out_name)[0]}.jpg")
-    #         cv2.imwrite(kp_out_path, kps_vis)
-
-    #     # Save keypoint comparison (Sapiens 2D + MHR 3D projected)
-    #     if len(outputs) > 0 and kp2d is not None:
-    #         if cam_int is not None:
-    #             comp_cam_K = cam_int.squeeze(0).cpu().numpy()
-    #         else:
-    #             hf, wf = img.shape[:2]
-    #             f = float(outputs[0].get("focal_length", 1.0))
-    #             comp_cam_K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-    #         comp_out_path = os.path.join(output_folder, f"kps_cmp_{os.path.splitext(out_name)[0]}.jpg")
-    #         save_keypoint_comparison(img, outputs, kp2d, comp_cam_K, comp_out_path)
 
     #     # Run MHR pose optimization if sapiens keypoints are available
     #     if len(outputs) > 0 and kp2d is not None:

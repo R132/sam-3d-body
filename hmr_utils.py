@@ -3,6 +3,7 @@ import numpy as np
 import roma
 import os
 import cv2
+import json
 
 
 def numpy_to_torch(array, device=None):
@@ -163,6 +164,21 @@ class MHRUtils:
             print(f"[INFO] Saved projected keypoints image to {output_image_path}")
 
         return pred_keypoints_2d
+    
+    def opt_pose_by_kps2d(self, outputs, target_kps2d, num_iters=100, lr=0.01, img=None, output_image_path=None):
+        """Optimize MHR pose parameters to fit target 2D keypoints."""
+        # init paras
+
+        # init optimizor
+
+        for iter in range(num_iters):
+            pred_j2d = self.project_joints_to_2d(outputs)
+            loss = torch.nn.functional.mse_loss(pred_j2d, target_kps2d)
+            pass
+
+        # fill back data to outputs
+
+        return outputs
 
     def _inference_wrt_rt(self, outputs):
         """Run inference with MHR from SAM3D outputs"""
@@ -303,3 +319,189 @@ class MHRUtils:
 
 
         return mse, per_vertex_errors
+    
+
+def load_sapiens_kps(json_path: str) -> dict:
+    """Load Sapiens 2D predictions JSON and return mapping image_name -> keypoints array.
+
+    The loader tries to accept multiple common formats:
+    - A dict mapping image filenames to {'keypoints': [...]} or list of floats.
+    - A list of entries with 'image' and 'keypoints' fields.
+    - A "frames" format (Sapiens detection output).
+
+    Returned keypoints arrays have shape (N,2) or (N,3) if confidence provided.
+    """
+    with open(json_path, "r") as f:
+        data = json.load(f)
+
+    out = {}
+
+    if isinstance(data, dict):
+        # mapping style
+        # Check for standard keypoint dict or "frames" format (Sapiens detection output)
+        if "frames" in data and isinstance(data["frames"], list):
+            # Sapiens format: {"video": ..., "frames": [{"image_name": ..., "instances": [{"keypoints": [...], "keypoint_scores": [...]}]}]}
+            for frame in data["frames"]:
+                if not isinstance(frame, dict):
+                    continue
+                image_name = frame.get("image_name")
+                if image_name is None:
+                    continue
+                instances = frame.get("instances", [])
+                if not instances:
+                    continue
+                # Take first instance
+                inst = instances[0]
+                kps_list = inst.get("keypoints")
+                scores_list = inst.get("keypoint_scores")
+                if kps_list is None:
+                    continue
+                kps = np.array(kps_list, dtype=np.float32)  # (N, 2)
+                if scores_list is not None:
+                    scores = np.array(scores_list, dtype=np.float32)  # (N,)
+                    # Append confidence as third column
+                    kps = np.concatenate([kps, scores[:, None]], axis=1)
+                out[os.path.basename(image_name)] = kps
+        else:
+            for k, v in data.items():
+                if isinstance(v, dict) and "keypoints" in v:
+                    kps = np.array(v["keypoints"])
+                else:
+                    # assume the value is the flat list
+                    try:
+                        kps = np.array(v)
+                    except Exception:
+                        continue
+                if kps.ndim == 1:
+                    if kps.size % 3 == 0:
+                        kps = kps.reshape(-1, 3)
+                    elif kps.size % 2 == 0:
+                        kps = kps.reshape(-1, 2)
+                out[os.path.basename(k)] = kps
+    elif isinstance(data, list):
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            image = entry.get("image") or entry.get("file_name") or entry.get("image_id") or entry.get("image_name")
+            if image is None:
+                continue
+            kps = None
+            if "keypoints" in entry:
+                kps = np.array(entry["keypoints"])
+            elif "pred_keypoints_2d" in entry:
+                kps = np.array(entry["pred_keypoints_2d"])
+            if kps is None:
+                continue
+            if kps.ndim == 1:
+                if kps.size % 3 == 0:
+                    kps = kps.reshape(-1, 3)
+                elif kps.size % 2 == 0:
+                    kps = kps.reshape(-1, 2)
+            out[os.path.basename(image)] = kps
+    else:
+        raise ValueError("Unsupported Sapiens JSON format")
+
+    return out
+
+
+def visualize_keypoints_on_image(img, keypoints, output_path=None):
+    """
+    Visualize 2D keypoints on an image.
+
+    Args:
+        img: Input image (numpy array, BGR format).
+        keypoints: Keypoints array of shape (N, 2) or (N, 3) where 3rd dim is confidence.
+        output_path: If provided, save the image to this path.
+
+    Returns:
+        The image with keypoints drawn.
+    """
+    vis_img = img.copy()
+    h, w = img.shape[:2]
+
+    # Ensure keypoints are numpy array
+    if hasattr(keypoints, 'cpu'):
+        keypoints = keypoints.cpu().numpy()
+    
+    # Handle shape
+    if keypoints.ndim == 1:
+        if keypoints.size % 3 == 0:
+            keypoints = keypoints.reshape(-1, 3)
+        elif keypoints.size % 2 == 0:
+            keypoints = keypoints.reshape(-1, 2)
+    
+    pts = keypoints[:, :2]
+    conf = keypoints[:, 2] if keypoints.shape[1] >= 3 else np.ones(len(pts))
+
+    for i, (x, y) in enumerate(pts):
+        c = conf[i]
+        # Filter out invalid or low confidence points
+        if np.isnan(x) or np.isnan(y) or c < 0.1:
+            continue
+        
+        x, y = int(x), int(y)
+        if 0 <= x < w and 0 <= y < h:
+            # Draw circle for keypoint
+            cv2.circle(vis_img, (x, y), 4, (0, 255, 0), -1)
+            # Optional: Draw index number
+            # cv2.putText(vis_img, str(i), (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+
+    if output_path is not None:
+        out_dir = os.path.dirname(output_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        cv2.imwrite(output_path, vis_img)
+        print(f"[INFO] Saved keypoints visualization to {output_path}")
+
+    return vis_img
+
+
+def visualize_dual_keypoints_on_image(img, keypoints1, keypoints2, output_path=None):
+    """
+    Visualize two sets of keypoints on an image.
+    keypoints1 -> Green
+    keypoints2 -> Red
+    """
+    vis_img = img.copy()
+    h, w = img.shape[:2]
+
+    def draw_kps(kps, color):
+        if kps is None: return
+        if hasattr(kps, 'cpu'): kps = kps.cpu().numpy()
+        
+        # 1. 处理 Batch 维度: (1, N, 2) -> (N, 2)
+        if kps.ndim == 3 and kps.shape[0] == 1:
+            kps = kps[0]
+        # 2. 处理 1D 展平数据
+        elif kps.ndim == 1:
+            if kps.size % 3 == 0: kps = kps.reshape(-1, 3)
+            elif kps.size % 2 == 0: kps = kps.reshape(-1, 2)
+
+        # 确保是 2D 数组 (N, 2) 或 (N, 3)
+        if kps.ndim != 2: return
+
+        pts = kps[:, :2]
+        conf = kps[:, 2] if kps.shape[1] >= 3 else np.ones(len(pts))
+
+        for i in range(len(pts)):
+            x, y = float(pts[i, 0]), float(pts[i, 1])
+            c = float(conf[i])
+            if np.isnan(x) or np.isnan(y) or c < 0.1: continue
+            
+            x, y = int(x), int(y)
+            if 0 <= x < w and 0 <= y < h:
+                cv2.circle(vis_img, (x, y), 4, color, -1)
+
+    # 1. Draw keypoints1 in GREEN
+    draw_kps(keypoints1, (0, 255, 0))
+
+    # 2. Draw keypoints2 in RED
+    draw_kps(keypoints2, (0, 0, 255))
+
+    if output_path is not None:
+        out_dir = os.path.dirname(output_path)
+        if out_dir: os.makedirs(out_dir, exist_ok=True)
+        cv2.imwrite(output_path, vis_img)
+        print(f"[INFO] Saved dual keypoints visualization to {output_path}")
+
+    return vis_img
