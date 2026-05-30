@@ -423,6 +423,7 @@ def main(args):
         visualize_keypoints_on_image(img, kp2d_sapiens, os.path.join(output_folder, f"sapiens_70_kps_{out_name}"))
         visualize_dual_keypoints_on_image(img, kp2d_sapiens, pred_keypoints_2d, os.path.join(output_folder, f"dual_kps_{out_name}"))
 
+        mhr_utils_model.opt_pose_by_kps2d(outputs[0], kp2d_sapiens, img, num_iters=100, lr=0.01, output_image_path=os.path.join(output_folder, f"optimized_pose_{out_name}"))
 
     #     # Run MHR pose optimization if sapiens keypoints are available
     #     if len(outputs) > 0 and kp2d is not None:
