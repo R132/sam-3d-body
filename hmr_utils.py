@@ -5,6 +5,7 @@ import os
 import cv2
 import json
 
+from tqdm import tqdm
 import torch.nn.functional as F
 
 
@@ -111,9 +112,9 @@ class MHRUtils:
         return j3d.squeeze(0)
     
     def get_joints_3d_diff(self, mhr_paras):
-        identity_coeffs = mhr_paras['shape_params']
-        model_parameters = mhr_paras['mhr_model_params']
-        face_expr_coeffs = mhr_paras['expr_params']
+        identity_coeffs = mhr_paras['identity_coeffs']
+        model_parameters = mhr_paras['model_parameters']
+        face_expr_coeffs = mhr_paras['face_expr_coeffs']
 
         vertices, skeleton_state = self.mhr_model(
             identity_coeffs=identity_coeffs,
@@ -142,7 +143,7 @@ class MHRUtils:
         j3d = j3d[:, :70]  # 308 --> 70 keypoints
         j3d[..., [1, 2]] *= -1  # Camera system difference
 
-        return j3d.squeeze(0)
+        return j3d
     
     def get_j2d_diff(self, mhr_paras):
         height = mhr_paras["height"]
@@ -281,9 +282,11 @@ class MHRUtils:
             "pred_cam_t": pred_cam_t,
             "height": height,
             "width": width,
+            "focal_length": outputs['focal_length'],
         }
 
-        for iter in range(num_iters):
+        loop = tqdm(range(num_iters), desc="Optimizing MHR pose")
+        for iter in loop:
             optimizer.zero_grad()
             
             # --- 前向传播 (Differentiable MHR Inference) ---
@@ -297,6 +300,7 @@ class MHRUtils:
             optimizer.step()
             if iter % 10 == 0:
                 print(f"Iter {iter}: Loss {loss.item():.6f}")
+                loop.set_description(f"Iter {iter}: Loss {loss.item():.6f}")
                 # 可视化
                 if output_image_path is not None:
                     # 绘制优化结果

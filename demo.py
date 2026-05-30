@@ -389,14 +389,22 @@ def main(args):
                     mask_img = cv2.cvtColor(mask_img, cv2.COLOR_BGR2GRAY)
                 masks = mask_img.astype(np.uint8)[None, ...]
 
-        outputs = estimator.process_one_image(
-            img_path,
-            bboxes=None,
-            masks=None,
-            cam_int=cam_int,
-            bbox_thr=args.bbox_thresh,
-            use_mask=False,
-        )
+        print(f"\n[DEBUG] About to call estimator.process_one_image() for frame {idx}")
+        if os.path.exists(os.path.join(output_folder, f"outputs_frame_{idx}.pt")):
+            print(f"[DEBUG] Found existing outputs for frame {idx}, loading from file")
+            outputs = torch.load(os.path.join(output_folder, f"outputs_frame_{idx}.pt"), weights_only=False)
+        else:
+            outputs = estimator.process_one_image(
+                img_path,
+                bboxes=None,
+                masks=None,
+                cam_int=cam_int,
+                bbox_thr=args.bbox_thresh,
+                use_mask=False,
+            )
+            torch.save(outputs, os.path.join(output_folder, f"outputs_frame_{idx}.pt"))  # Save raw outputs for debugging
+            print(f"[DEBUG] estimator.process_one_image() returned for frame {idx}")
+        torch.cuda.synchronize()
 
         img = cv2.imread(img_path)
         out_name = os.path.basename(img_path)
