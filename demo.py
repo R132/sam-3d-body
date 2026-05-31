@@ -349,6 +349,11 @@ def main(args):
         from tools.build_sam import HumanSegmentor
 
         human_segmentor = HumanSegmentor(name=args.segmentor_name, device=device, path=segmentor_path)
+    
+    mhr_dir = os.path.dirname(mhr_path)
+    save_path = os.path.join(mhr_dir, "keypoint_mapping.pt")
+    if not os.path.exists(save_path):
+        save_keypoint_mapping(estimator, mhr_path)
 
     seq = None
     seq = read_sequence(args.input_dir)

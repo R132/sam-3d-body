@@ -141,7 +141,7 @@ class MHRUtils:
             .permute(1, 0, 2)
         )
         j3d = j3d[:, :70]  # 308 --> 70 keypoints
-        j3d[..., [1, 2]] *= -1  # Camera system difference
+        j3d = j3d * torch.tensor([1, -1, -1], device=j3d.device, dtype=j3d.dtype)  # Camera system difference
 
         return j3d
     
@@ -155,19 +155,37 @@ class MHRUtils:
 
         pred_keypoints_3d_proj = j3d + pred_cam_t
         # 直接相乘，因为维度已经对齐
-        pred_keypoints_3d_proj[:, :, [0, 1]] *= focal_length
-        
+        # pred_keypoints_3d_proj[:, :, [0, 1]] *= focal_length
+        pred_keypoints_3d_proj = pred_keypoints_3d_proj * torch.tensor([focal_length, focal_length, 1.0], device=pred_keypoints_3d_proj.device, dtype=pred_keypoints_3d_proj.dtype)
+
         # 图像中心偏移
-        pred_keypoints_3d_proj[:, :, [0, 1]] = (
-            pred_keypoints_3d_proj[:, :, [0, 1]]
-            + torch.FloatTensor([width / 2, height / 2]).to(pred_keypoints_3d_proj)[None, None, :]
-            * pred_keypoints_3d_proj[:, :, [2]]
-        )
+        # pred_keypoints_3d_proj[:, :, [0, 1]] = (
+        #     pred_keypoints_3d_proj[:, :, [0, 1]]
+        #     + torch.FloatTensor([width / 2, height / 2]).to(pred_keypoints_3d_proj)[None, None, :]
+        #     * pred_keypoints_3d_proj[:, :, [2]]
+        # )
+        # 先拆分通道
+        x = pred_keypoints_3d_proj[..., 0]
+        y = pred_keypoints_3d_proj[..., 1]
+        z = pred_keypoints_3d_proj[..., 2]
+
+        # 计算偏移
+        offset = torch.tensor([width / 2, height / 2], device=z.device, dtype=z.dtype)
+        x_new = x + offset[0] * z
+        y_new = y + offset[1] * z
+
+        # 拼接成新张量（无原地操作）
+        pred_keypoints_3d_proj = torch.stack([x_new, y_new, z], dim=-1)
         
         # 透视除法
-        pred_keypoints_3d_proj[:, :, :2] = (
-            pred_keypoints_3d_proj[:, :, :2] / pred_keypoints_3d_proj[:, :, [2]]
-        )
+        # pred_keypoints_3d_proj[:, :, :2] = (
+        #     pred_keypoints_3d_proj[:, :, :2] / pred_keypoints_3d_proj[:, :, [2]]
+        # )
+        # 透视除法：x,y / z
+        pred_keypoints_3d_proj = torch.cat([
+            pred_keypoints_3d_proj[..., :2] / pred_keypoints_3d_proj[..., [2]],
+            pred_keypoints_3d_proj[..., [2]]
+        ], dim=-1)
         
         pred_keypoints_2d = pred_keypoints_3d_proj[:, :, :2]
 
@@ -243,7 +261,7 @@ class MHRUtils:
         if isinstance(target_kps2d, np.ndarray):
             target_kps2d = torch.from_numpy(target_kps2d).float().to(device)
         if target_kps2d.dim() == 2:
-            target_kps2d = target_kps2d.unsqueeze(0)
+            target_kps2d = target_kps2d.unsqueeze(0)[:, :, :2]
 
         # 获取图像尺寸用于投影
         height, width = img.shape[:2]
@@ -305,8 +323,8 @@ class MHRUtils:
                 if output_image_path is not None:
                     # 绘制优化结果
                     vis_img = img.copy()
-                    pred_j2d_np = pred_j2d.squeeze(0).cpu().numpy()
-                    target_kps2d_np = target_kps2d.squeeze(0).cpu().numpy()
+                    pred_j2d_np = pred_j2d.detach().squeeze(0).cpu().numpy()
+                    target_kps2d_np = target_kps2d.detach().squeeze(0).cpu().numpy()
                     visualize_dual_keypoints_on_image(vis_img, target_kps2d_np, pred_j2d_np, output_image_path.replace('.png', '_iter{}.png'.format(iter)))
 
         # # 5. 回填数据到 outputs
