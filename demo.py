@@ -436,82 +436,9 @@ def main(args):
         visualize_keypoints_on_image(img, kp2d_sapiens, os.path.join(output_folder, f"sapiens_70_kps_{out_name}"))
         visualize_dual_keypoints_on_image(img, kp2d_sapiens, pred_keypoints_2d, os.path.join(output_folder, f"dual_kps_{out_name}"))
 
-        mhr_utils_model.opt_pose_by_kps2d(outputs[0], kp2d_sapiens, img, num_iters=100, lr=0.01, output_image_path=os.path.join(output_folder, f"optimized_pose_{out_name}"))
-
-    #     # Run MHR pose optimization if sapiens keypoints are available
-    #     if len(outputs) > 0 and kp2d is not None:
-    #         first = outputs[0]
-    #         init_params = {
-    #             'global_rot': first.get('global_rot'),
-    #             'body_pose_params': first.get('body_pose_params'),
-    #             'hand_pose_params': first.get('hand_pose_params'),
-    #             'scale_params': first.get('scale_params'),
-    #             'shape_params': first.get('shape_params'),
-    #             'expr_params': first.get('expr_params'),
-    #             'pred_cam_t': first.get('pred_cam_t'),
-    #             'focal_length': float(first.get('focal_length', 1.0)),
-    #         }
-    #         # Debug: print init_params
-    #         print(f"\n[OPT] init_params keys: {list(init_params.keys())}")
-    #         for k, v in init_params.items():
-    #             if v is not None:
-    #                 if hasattr(v, 'shape'):
-    #                     print(f"  {k}: shape={v.shape}")
-    #                 else:
-    #                     print(f"  {k}: {v}")
-    #             else:
-    #                 print(f"  {k}: None")
-
-    #         # Build camera intrinsics matrix
-    #         if cam_int is not None:
-    #             opt_cam_K = cam_int.squeeze(0).cpu().numpy()
-    #         else:
-    #             hf, wf = img.shape[:2]
-    #             f = float(first.get('focal_length', 1.0))
-    #             opt_cam_K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-
-    #         opt_out_prefix = os.path.join(output_folder, f"opt_{os.path.splitext(out_name)[0]}")
-    #         print(f"\n[OPT] Frame {idx}: Running pose optimization, iters={args.opt_iters}")
-    #         opt_result = optimize_mhr_pose(
-    #             estimator.model.head_pose,
-    #             init_params,
-    #             kp2d,
-    #             opt_cam_K,
-    #             img,
-    #             estimator.faces,
-    #             opt_out_prefix,
-    #             device=device,
-    #             num_iters=args.opt_iters,
-    #             lr=args.opt_lr,
-    #         )
-    #         print(f"[OPT] Frame {idx}: init_loss={opt_result['init_loss']:.1f}, final_loss={opt_result['final_loss']:.1f}, improvement={100*(1-opt_result['final_loss']/opt_result['init_loss']):.1f}%")
-    #         losses.append({
-    #             "frame": out_name,
-    #             "init_loss": float(opt_result['init_loss']),
-    #             "final_loss": float(opt_result['final_loss']),
-    #         })
-
-    #     # Fallback: compute simple reprojection loss if no sapiens keypoints
-    #     elif len(outputs) > 0 and kp2d is not None and "pred_keypoints_3d" in outputs[0]:
-    #         first = outputs[0]
-    #         pred_k3d = np.array(first["pred_keypoints_3d"])
-    #         if cam_int is not None:
-    #             K = cam_int.squeeze(0).cpu().numpy()
-    #         elif "focal_length" in first:
-    #             hf, wf = img.shape[:2]
-    #             f = first.get("focal_length", 1.0)
-    #             K = np.array([[f, 0.0, wf / 2.0], [0.0, f, hf / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-    #         else:
-    #             K = np.array([[1.0, 0.0, img.shape[1] / 2.0], [0.0, 1.0, img.shape[0] / 2.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-    #         mse, _ = reprojection_loss(pred_k3d, K, kp2d)
-    #         if mse is not None:
-    #             losses.append({"frame": out_name, "mse": float(mse)})
-
-    # # Save losses summary if any
-    # if len(losses) > 0:
-    #     with open(os.path.join(output_folder, "reproj_losses.json"), "w") as f:
-    #         json.dump(losses, f, indent=2)
-    #     print("Saved reprojection losses to", os.path.join(output_folder, "reproj_losses.json"))
+        opt_outputs = mhr_utils_model.opt_pose_by_kps2d(outputs[0], kp2d_sapiens, img, num_iters=100, lr=0.01, output_image_path=os.path.join(output_folder, f"optimized_pose_{out_name}"))
+        save_mesh_results(img, [opt_outputs], estimator.faces, os.path.join(output_folder, "optimized"), os.path.splitext(out_name)[0])
+ 
 
 
 if __name__ == "__main__":

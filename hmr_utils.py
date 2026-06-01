@@ -328,15 +328,39 @@ class MHRUtils:
                     visualize_dual_keypoints_on_image(vis_img, target_kps2d_np, pred_j2d_np, output_image_path.replace('.png', '_iter{}.png'.format(iter)))
 
         # # 5. 回填数据到 outputs
-        # outputs['body_pose_params'] = body_pose_params.detach().cpu().numpy().squeeze(0)
-        # outputs['global_rot'] = global_rot.detach().cpu().numpy().squeeze(0)
-        # outputs['pred_cam_t'] = pred_cam_t.detach().cpu().numpy().squeeze(0)
+        """
+        [DEBUG] Output keys: ['bbox', 'focal_length', 'pred_keypoints_3d', 'pred_keypoints_2d', 'pred_vertices', 
+        'pred_cam_t', 'pred_pose_raw', 'global_rot', 'body_pose_params', 'hand_pose_params', 'scale_params', 
+        'shape_params', 'expr_params', 'mask', 'pred_joint_coords', 'pred_global_rots', 'mhr_model_params', 'lhand_bbox', 'rhand_bbox']
+
+        """
+        opt_outputs = {}
+        opt_outputs['shape_params'] = identity_coeffs.detach().cpu().numpy()
+        opt_outputs['mhr_model_params'] = model_parameters.detach().cpu().numpy()
+        opt_outputs['expr_params'] = face_expr_coeffs.detach().cpu().numpy()
+        opt_outputs['global_rot'] = global_rot.detach().cpu().numpy()
+        opt_outputs['pred_cam_t'] = pred_cam_t.detach().cpu().numpy()
+        opt_outputs['focal_length'] = outputs['focal_length']
+        opt_outputs['bbox'] = outputs['bbox']
         
         # # 注意：更新 outputs 参数后，pred_keypoints_3d/2d 等字段并未自动更新，
         # # 需要调用 estimator.process_one_image 或重新计算。
         # # 这里为了演示，仅更新了基础参数。
+        opt_outputs["pred_keypoints_3d"] = None
+        opt_outputs["pred_keypoints_2d"] = None
+        opt_outputs["pred_vertices"] = self._inference_wrt_rt(opt_outputs)[0].detach().squeeze(0).cpu().numpy()
 
-        return outputs
+
+        opt_outputs["body_pose_params"] = None
+        opt_outputs["hand_pose_params"] = None
+        opt_outputs["scale_params"] = None
+        opt_outputs["pred_joint_coords"] = None
+        opt_outputs["pred_joint_coords"] = None
+        opt_outputs["pred_global_rots"] = None
+        opt_outputs["lhand_bbox"] = None
+        opt_outputs["rhand_bbox"] = None
+
+        return opt_outputs
 
     def _inference_wrt_rt(self, outputs):
         """Run inference with MHR from SAM3D outputs"""
