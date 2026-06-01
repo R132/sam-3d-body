@@ -350,11 +350,6 @@ def main(args):
 
         human_segmentor = HumanSegmentor(name=args.segmentor_name, device=device, path=segmentor_path)
     
-    mhr_dir = os.path.dirname(mhr_path)
-    save_path = os.path.join(mhr_dir, "keypoint_mapping.pt")
-    if not os.path.exists(save_path):
-        save_keypoint_mapping(estimator, mhr_path)
-
     seq = None
     seq = read_sequence(args.input_dir)
     if len(seq) == 0:
@@ -376,6 +371,11 @@ def main(args):
         human_segmentor=human_segmentor,
         fov_estimator=fov_estimator,
     )
+
+    mhr_dir = os.path.dirname(mhr_path)
+    save_path = os.path.join(mhr_dir, "keypoint_mapping.pt")
+    if not os.path.exists(save_path):
+        save_keypoint_mapping(estimator, mhr_path)
 
     mhr_utils_model = MHRUtils(mhr_path)
     losses = []
