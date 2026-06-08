@@ -335,11 +335,11 @@ class MHRUtils:
 
         """
         opt_outputs = {}
-        opt_outputs['shape_params'] = identity_coeffs.detach().cpu().numpy()
-        opt_outputs['mhr_model_params'] = model_parameters.detach().cpu().numpy()
-        opt_outputs['expr_params'] = face_expr_coeffs.detach().cpu().numpy()
-        opt_outputs['global_rot'] = global_rot.detach().cpu().numpy()
-        opt_outputs['pred_cam_t'] = pred_cam_t.detach().cpu().numpy()
+        opt_outputs['shape_params'] = identity_coeffs.detach().squeeze(0).cpu().numpy()
+        opt_outputs['mhr_model_params'] = model_parameters.detach().squeeze(0).cpu().numpy()
+        opt_outputs['expr_params'] = face_expr_coeffs.detach().squeeze(0).cpu().numpy()
+        opt_outputs['global_rot'] = global_rot.detach().squeeze(0).cpu().numpy()
+        opt_outputs['pred_cam_t'] = pred_cam_t.detach().squeeze(0).cpu().numpy()
         opt_outputs['focal_length'] = outputs['focal_length']
         opt_outputs['bbox'] = outputs['bbox']
         
